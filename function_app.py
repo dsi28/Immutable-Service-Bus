@@ -15,6 +15,8 @@ def servicebus_queue_trigger(sbmessage: func.ServiceBusMessage, context:func.Con
     logging.info("Python ServiceBus Queue trigger processed a message: %s", message_text)
     aquire_lock(sbmessage.message_id, invocation_id)
 
+
+
 # creates new lock with a duration in minutes
 def new_lock(lock_dur):
     lock_expire = datetime.datetime.now()
@@ -22,7 +24,7 @@ def new_lock(lock_dur):
     return lock_expire
 
 
-
+# check if there is a lock, if not aquire the lock, if there is a lock check if lock is expired.
 def aquire_lock(message_id, invocation_id):
     # create blob client
         # TODO: reuse this client between function executions
