@@ -15,6 +15,12 @@ def servicebus_queue_trigger(sbmessage: func.ServiceBusMessage, context:func.Con
     logging.info("Python ServiceBus Queue trigger processed a message: %s", message_text)
     aquire_lock(sbmessage.message_id, invocation_id)
 
+# creates new lock with a duration in minutes
+def new_lock(lock_dur):
+    lock_expire = datetime.datetime.now()
+    lock_expire = lock_expire.replace(minute=(lock_expire.minute + lock_dur) % 60)
+    return lock_expire
+
 
 
 def aquire_lock(message_id, invocation_id):
@@ -45,13 +51,12 @@ def aquire_lock(message_id, invocation_id):
             raise Exception(ex_message)
         else:
             # update lock and owner since the lock is expired in order to give this function execution the lock
-            lock_expire = datetime.datetime.now()
-            lock_expire = lock_expire.replace(minute=(lock_expire.minute + 5) % 60)
-            blob_client.set_blob_metadata(metadata={"ExpirationTime":f"{lock_expire}", "Owner":f"{invocation_id}"})
+            new_lock_time = new_lock(5)
+            blob_client.set_blob_metadata(metadata={"ExpirationTime":f"{new_lock_time}", "Owner":f"{invocation_id}"})
             blob_properties = blob_client.get_blob_properties()
-            new_lock = str(blob_properties.metadata["ExpirationTime"])
+            new_lock_ex = str(blob_properties.metadata["ExpirationTime"])
             new_owner = str(blob_properties.metadata["Owner"])
-            logging.warning(f"new lock expiration time: {new_lock} \n new owner: {new_owner}")
+            logging.warning(f"new lock expiration time: {new_lock_ex} \n new owner: {new_owner}")
     else:
         # if blob does not exsit, create blob with the following properties:
             # name lock-{service-bus-message-id}.lock
@@ -59,12 +64,10 @@ def aquire_lock(message_id, invocation_id):
             # Owner: {function-invocation-id}
         logging.warning("not exsists")
         # create expiration time for 5 mins from now
-        lock_expire = datetime.datetime.now()
-        lock_expire = lock_expire.replace(minute=(lock_expire.minute + 5) % 60)
-        blob_client.upload_blob(metadata={"ExpirationTime":f"{lock_expire}", "Owner": invocation_id}, data="dataTest")
+        new_lock_time = new_lock(5)
+        blob_client.upload_blob(metadata={"ExpirationTime":f"{new_lock_time}", "Owner": invocation_id}, data="dataTest")
 
 
-    
 
     
     
