@@ -6,41 +6,52 @@ from azure.servicebus.aio import ServiceBusClient
 from azure.servicebus import ServiceBusMessage
 import datetime
 import os
-
+import time
 
 app = func.FunctionApp()
 
+# Static/reusable blob service client. 
+blob_service_client = BlobServiceClient.from_connection_string(os.getenv("AzureWebJobsStorage"))
+
+
 @app.service_bus_queue_trigger(arg_name="sbmessage", queue_name=os.getenv('SERVICE_BUS_QUEUE'),
                                connection="daizquieSBNS_SERVICEBUS") 
-def servicebus_queue_trigger(sbmessage: func.ServiceBusMessage, context:func.Context):
+async def servicebus_queue_trigger(sbmessage: func.ServiceBusMessage, context:func.Context):
     message_text =  sbmessage.get_body().decode("utf-8")
     invocation_id = context.invocation_id
-    logging.info("Python ServiceBus Queue trigger processed a message: %s", message_text)
-    aquire_lock(sbmessage.message_id, invocation_id)
+    logging.warning("Python ServiceBus Queue trigger processed a message: %s", message_text)
+
+    # temp test setting a static message id
+    if os.getenv('USE_STATIC_MESSAGE_ID'):
+        message_id = "123"
+    blob_name = f"lock-{message_id}.lock"
+
+    # get blob even if its not created for the lock file name
+    blob_client = blob_service_client.get_blob_client(blob=blob_name, container=os.getenv("LOCKS_CONTAINER"))
+    logging.warning('created client')
+    aquire_lock(blob_client, sbmessage.message_id, invocation_id, blob_name)
+    
+    try:
+        # blocking opperation 
+        # time.sleep(120)
+
+        await asyncio.sleep(90)
+    except Exception as ex:
+        logging.error('ex during blocking call ' + str(ex))
+    finally:
+        release_lock(blob_client)
 
 
 
 # creates new lock with a duration in minutes
 def new_lock(lock_dur):
     lock_expire = datetime.datetime.now()
-    lock_expire = lock_expire.replace(minute=(lock_expire.minute + lock_dur) % 60)
+    lock_expire = lock_expire.replace(minute=(lock_expire.minute + int(lock_dur)) % 60)
     return lock_expire
 
 
 # check if there is a lock, if not aquire the lock, if there is a lock check if lock is expired.
-def aquire_lock(message_id, invocation_id):
-    # create blob client
-        # TODO: reuse this client between function executions
-    blob_service_client = BlobServiceClient.from_connection_string(os.getenv("AzureWebJobsStorage"))
-
-    # temp test setting a static message id
-    if os.getenv('USE_STATIC_MESSAGE_ID'):
-        message_id = "1234"
-    blob_name = f"lock-{message_id}.lock"
-
-    # get blob even if its not created for the lock file name
-    blob_client = blob_service_client.get_blob_client(blob=blob_name, container=os.getenv("LOCKS_CONTAINER"))
-
+def aquire_lock(blob_client, message_id, invocation_id, blob_name):
     # check if lock blob exsists
     if blob_client.exists():
         logging.warning("lock exists")
@@ -58,7 +69,7 @@ def aquire_lock(message_id, invocation_id):
         else:
             # update lock and owner since the lock is expired in order to give this function execution the lock
             logging.warning('lock is expired')
-            new_lock_time = new_lock(5)
+            new_lock_time = new_lock(os.getenv('LOCK_DURATION_MINS'))
             blob_client.set_blob_metadata(metadata={"ExpirationTime":f"{new_lock_time}", "Owner":f"{invocation_id}"})
             blob_properties = blob_client.get_blob_properties()
             new_lock_ex = str(blob_properties.metadata["ExpirationTime"])
@@ -71,10 +82,18 @@ def aquire_lock(message_id, invocation_id):
             # Owner: {function-invocation-id}
         logging.warning("not exsists")
         # create expiration time for 5 mins from now
-        new_lock_time = new_lock(5)
+        new_lock_time = new_lock(os.getenv('LOCK_DURATION_MINS'))
         blob_client.upload_blob(metadata={"ExpirationTime":f"{new_lock_time}", "Owner": invocation_id}, data="dataTest")
 
 
+def release_lock(blob_client):
+    logging.warning('release lock')
+    try:
+        blob_client.delete_blob()
+        logging.warning('delete call succeeded')
+    except Exception as ex:
+        logging.error('Exception deleting blob ' + str(ex))
+    
 
     
     
@@ -95,8 +114,8 @@ async def http_trigger(req: func.HttpRequest) -> func.HttpResponse:
     if message_data:
         # send message to service bus. log message id here. 
         try:
-            logging.warning('sending')
             await send_service_bus_message(message_data)
+            logging.info('sent message to service bus')
             return func.HttpResponse(f"Message sent to service bus queue. This HTTP triggered function executed successfully.")
         except Exception as ex:
             logging.error(str(ex))
@@ -113,7 +132,6 @@ async def http_trigger(req: func.HttpRequest) -> func.HttpResponse:
 async def send_service_bus_message(m_data):
     async with ServiceBusClient.from_connection_string(conn_str=os.getenv('daizquieSBNS_SERVICEBUS'), 
                                                        logging_enable=True) as servicebus_client:
-        logging.warning('sending 2')
         # Get a Queue Sender object to send messages to the queue
         sender = servicebus_client.get_queue_sender(queue_name=os.getenv('SERVICE_BUS_QUEUE'))
         async with sender:
